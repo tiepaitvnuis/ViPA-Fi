@@ -72,6 +72,7 @@ if __name__ == '__main__':
     parser.add_argument("--dropout", type=float, help="Dropout rate", default=0.1)
     parser.add_argument("--num_workers", type=int, default=0, help="Number of workers for DataLoader (0=main process only, avoids Windows page file issues)")
     parser.add_argument("--pretrained_weights", action="store_true", help="Use pretrained weights")
+    parser.add_argument("--resume_weight", type=str, default=None, help="Path to checkpoint to resume training from")
     parser.add_argument("--graattention_layers", type=int, default=4, help="Number of layers in the graph attention network")
     parser.add_argument("--agg_mode", type=str, default="joint_attn", choices=["mean", "attn2", "mhsa", "joint_attn"], help="Aggregation mode")
     parser.add_argument("--disable_refinement", action="store_true", help="Disable hierarchical extremity refinement")
@@ -138,7 +139,10 @@ if __name__ == '__main__':
             agg_mode=args.agg_mode,
             use_refinement=not args.disable_refinement,
         ).to(device)
-        if not args.pretrained_weights:
+        if args.resume_weight:
+            print(f"Loading weights from {args.resume_weight}")
+            model.load_state_dict(torch.load(args.resume_weight, map_location=device))
+        elif not args.pretrained_weights:
             model.apply(_weights_init)
         warmup_epochs = 5
         def lr_lambda(cur_epoch):
@@ -251,6 +255,7 @@ if __name__ == '__main__':
                 torch.nn.utils.clip_grad_norm_( (p for p in model.parameters() if p.requires_grad), 1.0)
                 optim.step()
                 optim.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
         scheduler.step()
         avg_train_loss = sum(losses) / len(losses)
         avg_pose_loss = sum(pose_losses) / len(pose_losses)

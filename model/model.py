@@ -154,13 +154,29 @@ class VisibilityAwareExtremityRefinement(nn.Module):
         self.register_buffer("limb_mask", limb_mask)
         self.register_buffer("extremity_mask", extremity_mask)
 
-        context_dim = feat_dim * 2 + 6 + 4
+        # Context: [feat, parent_feat, pose, parent_pose, visibility, parent_visibility]
+        # Removed raw uncertainty from context — gate uses visibility directly
+        context_dim = feat_dim * 2 + 6 + 2
         self.limb_refine = self._make_refiner(context_dim, hidden, dropout)
         self.extremity_refine = self._make_refiner(context_dim, hidden, dropout)
-        self.limb_gate = nn.Sequential(nn.LayerNorm(context_dim), nn.Linear(context_dim, 1), nn.Sigmoid())
-        self.extremity_gate = nn.Sequential(nn.LayerNorm(context_dim), nn.Linear(context_dim, 1), nn.Sigmoid())
-        self._zero_last_layer(self.limb_refine)
-        self._zero_last_layer(self.extremity_refine)
+        # Gate driven by visibility: high visibility → high confidence → gate opens
+        self.limb_gate = nn.Sequential(
+            nn.LayerNorm(context_dim),
+            nn.Linear(context_dim, hidden // 2),
+            nn.GELU(),
+            nn.Linear(hidden // 2, 1),
+            nn.Sigmoid(),
+        )
+        self.extremity_gate = nn.Sequential(
+            nn.LayerNorm(context_dim),
+            nn.Linear(context_dim, hidden // 2),
+            nn.GELU(),
+            nn.Linear(hidden // 2, 1),
+            nn.Sigmoid(),
+        )
+        # Small (not zero) init for last layer — allows gradient to flow from start
+        self._small_init_last_layer(self.limb_refine)
+        self._small_init_last_layer(self.extremity_refine)
 
     def _make_refiner(self, context_dim, hidden, dropout):
         return nn.Sequential(
@@ -174,19 +190,18 @@ class VisibilityAwareExtremityRefinement(nn.Module):
             nn.Linear(hidden, 3),
         )
 
-    def _zero_last_layer(self, module):
+    def _small_init_last_layer(self, module):
+        """Small (not zero!) init so gradients can flow through gate from epoch 1."""
         last = module[-1]
-        nn.init.zeros_(last.weight)
+        nn.init.normal_(last.weight, std=0.01)
         nn.init.zeros_(last.bias)
 
     def _context(self, pose, features, log_var, visibility):
         parent_pose = pose[:, self.parent_index, :]
         parent_features = features[:, self.parent_index, :]
-        uncertainty = torch.exp(0.5 * log_var).mean(dim=-1, keepdim=True)
-        parent_uncertainty = uncertainty[:, self.parent_index, :]
         parent_visibility = visibility[:, self.parent_index, :]
         return torch.cat(
-            [features, parent_features, pose, parent_pose, uncertainty, parent_uncertainty, visibility, parent_visibility],
+            [features, parent_features, pose, parent_pose, visibility, parent_visibility],
             dim=-1,
         )
 
